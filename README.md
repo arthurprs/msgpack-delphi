@@ -1,5 +1,6 @@
 msgpack-delphi
 ==============
+From http://www.msgpack.org/
 > MessagePack is an efficient binary serialization format. It lets you exchange data among multiple languages like JSON but it's faster and smaller.
 > For example, small integers (like flags or error code) are encoded into a single byte, and typical short strings only require an extra byte in addition to the strings themselves.
 > 
