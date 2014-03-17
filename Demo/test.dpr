@@ -29,10 +29,12 @@ var
 begin
   // test array with some ints
   ob := TMsgPackObject.Create(mptArray);
-  ob.Clone();
   ar := ob.AsArray();
   for i := 0 to High(Ints) do
     ar.Add(MPO(Ints[i]));
+
+  // test clone
+  Assert(ob.Clone().AsMsgPack() = ob.AsMsgPack());
 
   // parse the dump and check the integrity
   ob := TMsgPackObject.Parse(ob.AsMsgPack());
@@ -53,10 +55,13 @@ begin
   Assert(s = map['single'].AsFloat(), FloatToStr(s) + ' ' + FloatToStr(map['single'].AsFloat()));
   Assert(d = map['double'].AsDouble(), FloatToStr(d) + ' ' + FloatToStr(map['double'].AsDouble()));
 
+  // test clone
+  Assert(ob.Clone().AsMsgPack() = ob.AsMsgPack());
+
   // test map
   ob := TMsgPackObject.Create(mptMap);
   map := ob.AsMap();
-  for i := 0 to 1000000 do
+  for i := 0 to 100000 do
   begin
     map['key' + IntToStr(i)] := MPO('value' + IntToStr(i));
     if i mod 31 = 0 then // i don't like multiples of 31, delete them :O
@@ -65,7 +70,7 @@ begin
 
   ob := TMsgPackObject.Parse(ob.AsMsgPack());
   map := ob.AsMap();
-  for i := 0 to 1000000 do
+  for i := 0 to 100000 do
   begin
     if i mod 31 = 0 then
       Assert(map['key' + IntToStr(i)] = nil) // make sure they're not there

@@ -14,9 +14,11 @@
  * Unit owner : Arthur Pires Ribeiro Silva <arthurprs@gmail.com>
  * Web site   : https://github.com/arthurprs/msgpack-delphi
  *
+ * The implementation prefers simplicity and correctness over speed (but still very fast).
+ *
  * Inspiration: http://code.google.com/p/superobject/
  *}
- 
+
 unit msgpack;
 
 interface
@@ -29,17 +31,14 @@ uses
 {$IFEND}
 
 type
-{$IFDEF UNICODE}
-  NativeString = UnicodeString;
-{$ELSE}
-  NativeString = AnsiString;
+{$IFNDEF UNICODE}
   RawByteString = AnsiString;
   UnicodeString = WideString;
 {$ENDIF}
   IMsgPackObject = interface;
   TMsgPackObject = class;
 
-  TMsgPackType = (mptNil = 0, mptBoolean, mptInteger, mptFloat, mptDouble, mptRaw, mptArray, mptMap);
+  TMsgPackType = (mptNil = 0, mptBoolean, mptInteger, mptFloat, mptDouble, mptString, mptBytes, mptArray, mptMap);
 
   TMsgPackArray = class
   private
@@ -59,12 +58,12 @@ type
 
   TMsgPackMapIterator = record
     FCursor: Integer;
-    Key: NativeString;
+    Key: UnicodeString;
     Value: IMsgPackObject;
   end;
 
   TMsgPackMapBucket = record
-    Key: NativeString;
+    Key: UnicodeString;
     Value: IMsgPackObject;
   end;
 
@@ -79,18 +78,18 @@ type
     // double the hashtable size
     procedure Grow();
     // Return the bucket containing the key or the bucket where it could be inserted
-    function FindBucket(const Key: NativeString): PMsgPackMapBucket;
+    function FindBucket(const Key: UnicodeString): PMsgPackMapBucket;
   public
     constructor Create();
     destructor Destroy; override;
     procedure Clear();
-    procedure Put(const Key: NativeString; const Value: IMsgPackObject);
-    function Get(const Key: NativeString): IMsgPackObject;
-    procedure Delete(const Key: NativeString);
+    procedure Put(const Key: UnicodeString; const Value: IMsgPackObject);
+    function Get(const Key: UnicodeString): IMsgPackObject;
+    procedure Delete(const Key: UnicodeString);
     procedure IteratorInit(var Iterator: TMsgPackMapIterator);
     function IteratorAdvance(var Iterator: TMsgPackMapIterator): Boolean;
     property Count: Integer read FCount;
-    property Values[const Key: NativeString]: IMsgPackObject read Get write Put; default;
+    property Values[const Key: UnicodeString]: IMsgPackObject read Get write Put; default;
   end;
 
   IMsgPackObject = interface
@@ -142,13 +141,13 @@ type
     destructor Destroy; override;
     // creating new objects
     constructor Create(); overload; // create as nil
+    constructor Create(const ObjectType: TMsgPackType); overload;
     constructor Create(const Value: Boolean); overload;
     constructor Create(const Value: Int64); overload;
     constructor Create(const Value: Single); overload;
     constructor Create(const Value: Double); overload;
     constructor Create(const Value: RawByteString); overload;
     constructor Create(const Value: UnicodeString); overload;
-    constructor Create(const ObjectType: TMsgPackType); overload;
     // parsing
     constructor Parse(const Str: RawByteString); overload;
     constructor Parse(const Stream: TStream); overload;
@@ -230,20 +229,24 @@ end;
 var
   DeletedBucket: IMsgPackObject;
 
-function HashString(const Key: NativeString): Cardinal;
+function HashString(const Key: UnicodeString): Cardinal;
 var
   i: Integer;
 begin
+  // iterates over 2 bytes (1 char) at a time on purpose
   Result := 0;
   for i := 1 to Length(Key) do
-    Result := (Result xor Ord(Key[i])) * 33;
+    Result := (Result xor Ord(Key[i])) * 16777619;
 end;
 
-procedure TMsgPackMap.Put(const Key: NativeString; const Value: IMsgPackObject);
+procedure TMsgPackMap.Put(const Key: UnicodeString; const Value: IMsgPackObject);
 var
   bucket: PMsgPackMapBucket;
 begin
-  if FCount >= FCapacity div 2 then
+  if Key = '' then
+    raise EInvalidOperation.Create('Empty Key');
+
+  if FCount >= (FCapacity div 3) * 2 then
     Grow();
 
   bucket := FindBucket(Key);
@@ -272,7 +275,7 @@ begin
 
 end;
 
-procedure TMsgPackMap.Delete(const Key: NativeString);
+procedure TMsgPackMap.Delete(const Key: UnicodeString);
 var
   bucket: PMsgPackMapBucket;
 begin
@@ -290,7 +293,7 @@ begin
 
 end;
 
-function TMsgPackMap.Get(const Key: NativeString): IMsgPackObject;
+function TMsgPackMap.Get(const Key: UnicodeString): IMsgPackObject;
 var
   bucket: PMsgPackMapBucket;
 begin
@@ -351,7 +354,7 @@ begin
   end;
 end;
 
-function TMsgPackMap.FindBucket(const Key: NativeString): PMsgPackMapBucket;
+function TMsgPackMap.FindBucket(const Key: UnicodeString): PMsgPackMapBucket;
 var
   hash: Cardinal;
 begin
@@ -456,7 +459,7 @@ begin
   case FType of
     mptNil:
       Result := '';
-    mptRaw:
+    mptBytes, mptString:
       Result := FBytes;
   else
     raise EInvalidCast.Create('Invalid cast');
@@ -536,11 +539,16 @@ end;
 
 function TMsgPackObject.AsString: UnicodeString;
 begin
+  case FType of
+    mptString, mptBytes:
 {$IFDEF UNICODE}
-  Result := UTF8ToUnicodeString(AsBytes());
+      Result := UTF8ToUnicodeString(AsBytes());
 {$ELSE}
-  Result := UTF8Decode(AsBytes());
+      Result := UTF8Decode(AsBytes());
 {$ENDIF}
+  else
+    raise EInvalidCast.Create('Invalid cast');
+  end;
 end;
 
 function TMsgPackObject.AsMap: TMsgPackMap;
@@ -586,7 +594,7 @@ end;
 
 constructor TMsgPackObject.Create(const Value: RawByteString);
 begin
-  FType := mptRaw;
+  FType := mptBytes;
   FBytes := Value;
 end;
 
@@ -603,7 +611,7 @@ end;
 
 constructor TMsgPackObject.Create(const Value: UnicodeString);
 begin
-  FType := mptRaw;
+  FType := mptString;
   FBytes := UTF8Encode(Value);
 end;
 
@@ -620,12 +628,13 @@ end;
 
 function TMsgPackObject.AsMsgPack: RawByteString;
 var
-  resultStream: TStringStream;
+  resultStream: TMemoryStream;
 begin
-  resultStream := TStringStream.Create('');
+  resultStream := TMemoryStream.Create();
   try
     Write(resultStream);
-    Result := RawByteString(resultStream.DataString);
+    SetLength(Result, resultStream.Size);
+    Move(resultStream.Memory^, Pointer(Result)^, resultStream.Size);
   finally
     resultStream.Free;
   end;
@@ -664,11 +673,38 @@ procedure TMsgPackObject.Write(const Stream: TStream);
   procedure WriteBytes(const Value: RawByteString);
   begin
     case Length(Value) of
+      0..255:
+        begin // uint8
+          WriteByte($C4);
+          WriteByte(Length(Value));
+        end;
+      256..High(Word):
+        begin
+          WriteByte($C5); // uint16
+          WriteBEWord(Length(Value));
+        end;
+    else
+      begin
+        WriteByte($C6); // uint32
+        WriteBEDWord(Length(Value));
+      end;
+    end;
+    Stream.Write(Pointer(Value)^, Length(Value));
+  end;
+
+  procedure WriteString(const Value: RawByteString);
+  begin
+    case Length(Value) of
       0..31:
-        begin // fixraw
+        begin // fixstr
           WriteByte($A0 or Length(Value));
         end;
-      32..High(Word):
+      32..255:
+        begin
+          WriteByte($D9);
+          WriteByte(Length(Value))
+        end;
+      256..High(Word):
         begin
           WriteByte($DA); // uint16
           WriteBEWord(Length(Value));
@@ -682,9 +718,64 @@ procedure TMsgPackObject.Write(const Stream: TStream);
     Stream.Write(Pointer(Value)^, Length(Value));
   end;
 
-var
-  i: Integer;
-  mapIt: TMsgPackMapIterator;
+  procedure WriteArray();
+  var
+    i: Integer;
+  begin
+    // write the prefix
+    case FVariant.dataArray.Count of
+      0..15:
+        begin
+          WriteByte($90 or FVariant.dataArray.Count);
+        end;
+      16..High(Word):
+        begin
+          WriteByte($DC); // uint16
+          WriteBEWord(FVariant.dataArray.Count);
+        end;
+    else
+      begin
+        WriteByte($DD); // uint32
+        WriteBEDWord(FVariant.dataArray.Count);
+      end;
+    end;
+        // write the items
+    for i := 0 to FVariant.dataArray.Count - 1 do
+      FVariant.dataArray.Get(i).Write(Stream);
+  end;
+
+  procedure WriteMap();
+  var
+    mapIt: TMsgPackMapIterator;
+  begin
+    begin
+        // write the prefix
+      case FVariant.dataMap.Count of
+        0..15:
+          begin
+            WriteByte($80 or FVariant.dataMap.Count);
+          end;
+        16..High(Word):
+          begin
+            WriteByte($DE); // uint16
+            WriteBEWord(FVariant.dataMap.Count);
+          end;
+      else
+        begin
+          WriteByte($DF); // uint32
+          WriteBEDWord(FVariant.dataMap.Count);
+        end;
+      end;
+        // write the pairs
+      FVariant.dataMap.IteratorInit(mapIt);
+      while FVariant.dataMap.IteratorAdvance(mapIt) do
+      begin
+        WriteString(UTF8Encode(mapIt.Key));
+        mapIt.Value.Write(Stream);
+      end;
+    end;
+  end;
+
 begin
   case FType of
     mptNil:
@@ -755,63 +846,13 @@ begin
         WriteBEQWord(PInt64(@FVariant.dataDouble)^);
       end;
     mptArray:
-      begin
-        // write the prefix
-        case FVariant.dataArray.Count of
-          0..15:
-            begin
-              WriteByte($90 or FVariant.dataArray.Count);
-            end;
-          16..High(Word):
-            begin
-              WriteByte($DC); // uint16
-              WriteBEWord(FVariant.dataArray.Count);
-            end;
-        else
-          begin
-            WriteByte($DD); // uint32
-            WriteBEDWord(FVariant.dataArray.Count);
-          end;
-        end;
-        // write the items
-        for i := 0 to FVariant.dataArray.Count - 1 do
-          FVariant.dataArray.Get(i).Write(Stream);
-      end;
+      WriteArray();
     mptMap:
-      begin
-        // write the prefix
-        case FVariant.dataMap.Count of
-          0..15:
-            begin
-              WriteByte($80 or FVariant.dataMap.Count);
-            end;
-          16..High(Word):
-            begin
-              WriteByte($DE); // uint16
-              WriteBEWord(FVariant.dataMap.Count);
-            end;
-        else
-          begin
-            WriteByte($DF); // uint32
-            WriteBEDWord(FVariant.dataMap.Count);
-          end;
-        end;
-        // write the pairs
-        FVariant.dataMap.IteratorInit(mapIt);
-        while FVariant.dataMap.IteratorAdvance(mapIt) do
-        begin
-{$IFDEF UNICODE}
-          WriteBytes(UTF8Encode(mapIt.Key));
-{$ELSE}
-          WriteBytes(mapIt.Key);
-{$ENDIF}
-          mapIt.Value.Write(Stream);
-        end;
-      end;
-    mptRaw:
-      begin
-        WriteBytes(FBytes);
-      end;
+      WriteMap();
+    mptBytes:
+      WriteBytes(FBytes);
+    mptString:
+      WriteString(FBytes);
   end;
 end;
 
@@ -862,7 +903,7 @@ procedure TMsgPackObject.Read(const Stream: TStream);
       Stream.ReadBuffer(bytes[i], 1);
   end;
 
-  function ReadBytes(Len: Integer = -1): RawByteString;
+  function ReadString(Len: Integer = -1): RawByteString;
   var
     prefix: Byte;
     readLen: Integer;
@@ -887,6 +928,31 @@ procedure TMsgPackObject.Read(const Stream: TStream);
       raise EReadError.CreateFmt('Unexpected end of string expected %d bytes but got %d', [Len, readLen]);
   end;
 
+  function ReadBytes(Len: Integer = -1): RawByteString;
+  var
+    prefix: Byte;
+    readLen: Integer;
+  begin
+    if Len = -1 then // need to get prefix?
+    begin
+      // read prefix
+      prefix := ReadByte();
+      if prefix = $C4 then
+        Len := ReadByte() // uint8
+      else if prefix = $C5 then
+        Len := ReadBEWord() // uint16
+      else if prefix = $C6 then
+        Len := ReadBEDWord() // uint32
+      else
+        raise EParserError.CreateFmt('Expected a binary in position %d', [Stream.Position - 1]);
+    end;
+    // read bytes
+    SetLength(Result, Len);
+    readLen := Stream.Read(Pointer(Result)^, Len);
+    if readLen <> Len then
+      raise EReadError.CreateFmt('Unexpected end of binary expected %d bytes but got %d', [Len, readLen]);
+  end;
+
   function ReadArray(const Count: Integer): TMsgPackArray;
   var
     i: Integer;
@@ -901,19 +967,17 @@ procedure TMsgPackObject.Read(const Stream: TStream);
   function ReadMap(const Count: Integer): TMsgPackMap;
   var
     i: Integer;
-    Key: NativeString;
+    Key: IMsgPackObject;
     Value: IMsgPackObject;
   begin
     Result := TMsgPackMap.Create;
     for i := 0 to Count - 1 do
     begin
-{$IFDEF UNICODE}
-      Key := UTF8ToUnicodeString(ReadBytes());
-{$ELSE}
-      Key := ReadBytes();
-{$ENDIF}
+      Key := TMsgPackObject.Parse(Stream);
+      if (Key.ObjectType <> mptString) and (Key.ObjectType <> mptBytes) then
+        raise EParserError.Create('Expected bytes or string for map key');
       Value := TMsgPackObject.Parse(Stream);
-      Result.Put(Key, Value);
+      Result.Put(Key.AsString(), Value);
     end;
   end;
 
@@ -984,14 +1048,29 @@ begin
         FType := mptInteger;
         FVariant.dataInteger := ReadBEQWord();
       end;
-    $DA: // raw16
+    $DA: // str16
       begin
-        FType := mptRaw;
+        FType := mptString;
+        FBytes := ReadString(ReadBEWord());
+      end;
+    $DB: // str32
+      begin
+        FType := mptString;
+        FBytes := ReadString(ReadBEDWord());
+      end;
+    $C4: // bin8
+      begin
+        FType := mptBytes;
+        FBytes := ReadBytes(ReadByte());
+      end;
+    $C5: // bin16
+      begin
+        FType := mptBytes;
         FBytes := ReadBytes(ReadBEWord());
       end;
-    $DB: // raw32
+    $C6: // bin32
       begin
-        FType := mptRaw;
+        FType := mptBytes;
         FBytes := ReadBytes(ReadBEDWord());
       end;
     $DC: // array16
@@ -1020,10 +1099,10 @@ begin
       FType := mptInteger;
       FVariant.dataInteger := ShortInt(prefix);
     end
-    else if prefix and $A0 = $A0 then // fix raw
+    else if prefix and $A0 = $A0 then // fix str
     begin
-      FType := mptRaw;
-      FBytes := ReadBytes(prefix and (not $A0));
+      FType := mptString;
+      FBytes := ReadString(prefix and (not $A0));
     end
     else if prefix and $90 = $90 then // fix array
     begin
@@ -1066,8 +1145,13 @@ begin
       Result := TMsgPackObject.Create(FVariant.dataFloat);
     mptDouble:
       Result := TMsgPackObject.Create(FVariant.dataDouble);
-    mptRaw:
+    mptBytes:
       Result := TMsgPackObject.Create(FBytes);
+    mptString:
+      begin
+        Result := TMsgPackObject.Create(mptString);
+        TMsgPackObject(Result).FBytes := FBytes;
+      end;
     mptArray:
       begin
         Result := TMsgPackObject.Create(mptArray);

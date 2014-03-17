@@ -5,7 +5,7 @@ program bench;
 uses
   Windows,
   SysUtils,
-  superobject in '..\superobject.pas',
+  superobject,
   msgpack in '..\msgpack.pas';
 
 function GetTick: LongWord;
