@@ -75,7 +75,7 @@ begin
     if i mod 31 = 0 then
       Assert(map['key' + IntToStr(i)] = nil) // make sure they're not there
     else
-      Assert(map['key' + IntToStr(i)].AsBytes() = 'value' + IntToStr(i));
+      Assert(map['key' + IntToStr(i)].AsString() = 'value' + IntToStr(i));
   end;
 
   // make sure the int handling is good

@@ -30,6 +30,11 @@ uses
 {$DEFINE HAVE_INLINE}
 {$IFEND}
 
+{$WARN UNSAFE_CAST OFF}
+{$WARN UNSAFE_CODE OFF}
+{$WARN UNSAFE_TYPE OFF}
+{$WARN HIDDEN_VIRTUAL OFF}
+
 type
 {$IFNDEF UNICODE}
   RawByteString = AnsiString;
@@ -58,12 +63,12 @@ type
 
   TMsgPackMapIterator = record
     FCursor: Integer;
-    Key: UnicodeString;
+    Key: IMsgPackObject;
     Value: IMsgPackObject;
   end;
 
   TMsgPackMapBucket = record
-    Key: UnicodeString;
+    Key: IMsgPackObject;
     Value: IMsgPackObject;
   end;
 
@@ -78,14 +83,17 @@ type
     // double the hashtable size
     procedure Grow();
     // Return the bucket containing the key or the bucket where it could be inserted
-    function FindBucket(const Key: UnicodeString): PMsgPackMapBucket;
+    function FindBucket(const Key: IMsgPackObject): PMsgPackMapBucket;
   public
     constructor Create();
     destructor Destroy; override;
     procedure Clear();
-    procedure Put(const Key: UnicodeString; const Value: IMsgPackObject);
-    function Get(const Key: UnicodeString): IMsgPackObject;
-    procedure Delete(const Key: UnicodeString);
+    procedure Put(const Key: UnicodeString; const Value: IMsgPackObject); overload; {$IFDEF HAVE_INLINE}inline; {$ENDIF}
+    procedure Put(const Key, Value: IMsgPackObject); overload;
+    function Get(const Key: UnicodeString): IMsgPackObject; overload; {$IFDEF HAVE_INLINE}inline; {$ENDIF}
+    function Get(const Key: IMsgPackObject): IMsgPackObject; overload;
+    procedure Delete(const Key: UnicodeString); overload; {$IFDEF HAVE_INLINE}inline; {$ENDIF}
+    procedure Delete(const Key: IMsgPackObject); overload;
     procedure IteratorInit(var Iterator: TMsgPackMapIterator);
     function IteratorAdvance(var Iterator: TMsgPackMapIterator): Boolean;
     property Count: Integer read FCount;
@@ -107,6 +115,9 @@ type
     function AsString: UnicodeString;
     function AsArray: TMsgPackArray;
     function AsMap: TMsgPackMap;
+    // equality
+    function Equals(const Other: IMsgPackObject): Boolean;
+    function HashCode(): Cardinal;
     // clone
     function Clone(): IMsgPackObject;
     // dump
@@ -164,8 +175,11 @@ type
     function AsString: UnicodeString;
     function AsArray: TMsgPackArray;
     function AsMap: TMsgPackMap;
+    // equality
+    function Equals(const Other: IMsgPackObject): Boolean;
     // clone
     function Clone(): IMsgPackObject;
+    function HashCode(): Cardinal;
     // dump
     function AsMsgPack(): RawByteString;
     procedure Write(const Stream: TStream);
@@ -229,28 +243,29 @@ end;
 var
   DeletedBucket: IMsgPackObject;
 
-function HashString(const Key: UnicodeString): Cardinal;
+function HashBytes(const Key: RawByteString): Cardinal;
 var
   i: Integer;
 begin
-  // iterates over 2 bytes (1 char) at a time on purpose
-  Result := 0;
+  Result := 2166136261;
   for i := 1 to Length(Key) do
     Result := (Result xor Ord(Key[i])) * 16777619;
 end;
 
 procedure TMsgPackMap.Put(const Key: UnicodeString; const Value: IMsgPackObject);
+begin
+  Put(MPO(Key), Value);
+end;
+
+procedure TMsgPackMap.Put(const Key, Value: IMsgPackObject);
 var
   bucket: PMsgPackMapBucket;
 begin
-  if Key = '' then
-    raise EInvalidOperation.Create('Empty Key');
-
   if FCount >= (FCapacity div 3) * 2 then
     Grow();
 
   bucket := FindBucket(Key);
-  if bucket.Key = '' then
+  if bucket.Key = nil then
   begin
     // new entry
     Inc(FCount);
@@ -276,13 +291,18 @@ begin
 end;
 
 procedure TMsgPackMap.Delete(const Key: UnicodeString);
+begin
+  Delete(MPO(Key));
+end;
+
+procedure TMsgPackMap.Delete(const Key: IMsgPackObject);
 var
   bucket: PMsgPackMapBucket;
 begin
   bucket := FindBucket(Key);
-  if bucket.Key <> '' then
+  if bucket.Key <> nil then
   begin
-    bucket.Key := '';
+    bucket.Key := nil;
     bucket.Value := DeletedBucket;
     Dec(FCount);
   end;
@@ -294,13 +314,18 @@ begin
 end;
 
 function TMsgPackMap.Get(const Key: UnicodeString): IMsgPackObject;
+begin
+  Result := Get(MPO(Key));
+end;
+
+function TMsgPackMap.Get(const Key: IMsgPackObject): IMsgPackObject;
 var
   bucket: PMsgPackMapBucket;
 begin
   Result := nil;
   if FCount = 0 then
     Exit;
-  if Key = '' then
+  if Key = nil then
     raise EInvalidOperation.Create('Empty Key');
   bucket := FindBucket(Key);
   if (bucket.Value <> nil) and (bucket.Value <> DeletedBucket) then
@@ -318,7 +343,7 @@ begin
   Inc(Iterator.FCursor);
   while Iterator.FCursor < FCapacity do
   begin
-    if FBuckets[Iterator.FCursor].Key <> '' then
+    if FBuckets[Iterator.FCursor].Key <> nil then
     begin
       Iterator.Key := FBuckets[Iterator.FCursor].Key;
       Iterator.Value := FBuckets[Iterator.FCursor].Value;
@@ -349,20 +374,20 @@ begin
 
   for i := 0 to oldCapacity - 1 do
   begin
-    if oldBuckets[i].Key <> '' then
+    if oldBuckets[i].Key <> nil then
       Put(oldBuckets[i].Key, oldBuckets[i].Value);
   end;
 end;
 
-function TMsgPackMap.FindBucket(const Key: UnicodeString): PMsgPackMapBucket;
+function TMsgPackMap.FindBucket(const Key: IMsgPackObject): PMsgPackMapBucket;
 var
   hash: Cardinal;
 begin
-  hash := HashString(Key) and (FCapacity - 1); // apply mask
+  hash := Key.HashCode() and (FCapacity - 1); // apply mask
   Result := @FBuckets[hash];
   while FBuckets[hash].Value <> nil do
   begin
-    if FBuckets[hash].Key = Key then
+    if (FBuckets[hash].Key <> nil) and FBuckets[hash].Key.Equals(Key) then
       Exit;
     hash := (hash + 1) and (FCapacity - 1);
     Result := @FBuckets[hash];
@@ -521,20 +546,7 @@ end;
 
 function TMsgPackObject.AsNil: Boolean;
 begin
-  case FType of
-    mptNil:
-      Result := True;
-    mptBoolean:
-      Result := FVariant.dataBoolean = False;
-    mptInteger:
-      Result := FVariant.dataInteger = 0;
-    mptArray:
-      Result := FVariant.dataArray.Count = 0;
-    mptMap:
-      Result := FVariant.dataMap.Count = 0;
-  else
-    raise EInvalidCast.Create('Invalid cast');
-  end;
+  Result := FType = mptNil;
 end;
 
 function TMsgPackObject.AsString: UnicodeString;
@@ -655,8 +667,8 @@ procedure TMsgPackObject.Write(const Stream: TStream);
 
   procedure WriteBEDWord(Value: Cardinal);
   begin
-    Value := ((Value and $000000FF) shl 24) or ((Value and $0000FF00) shl 8) or ((Value and $00FF0000) shr 8) or
-      ((Value and $FF000000) shr 24);
+    Value := ((Value and $000000FF) shl 24) or ((Value and $0000FF00) shl 8) or
+    ((Value and $00FF0000) shr 8) or ((Value and $FF000000) shr 24);
     Stream.Write(Value, 4);
   end;
 
@@ -770,7 +782,7 @@ procedure TMsgPackObject.Write(const Stream: TStream);
       FVariant.dataMap.IteratorInit(mapIt);
       while FVariant.dataMap.IteratorAdvance(mapIt) do
       begin
-        WriteString(UTF8Encode(mapIt.Key));
+        mapIt.Key.Write(Stream);
         mapIt.Value.Write(Stream);
       end;
     end;
@@ -1127,6 +1139,113 @@ end;
 constructor TMsgPackObject.Parse(const Stream: TStream);
 begin
   Read(Stream);
+end;
+
+function TMsgPackObject.Equals(const Other: IMsgPackObject): Boolean;
+
+  function ArrayEquals(): Boolean;
+  var
+    i: Integer;
+    otherArray: TMsgPackArray;
+  begin
+    Result := False;
+    if (Other.ObjectType = mptArray) and (Other.AsArray.Count = FVariant.dataArray.Count) then
+    begin
+      otherArray := Other.AsArray;
+      for i := 0 to otherArray.Count - 1 do
+      begin
+        if not FVariant.dataArray[i].Equals(otherArray[i]) then
+          Exit;
+      end;
+      Result := True;
+    end;
+  end;
+
+  function MapEquals(): Boolean;
+  var
+    otherMap: TMsgPackMap;
+    mapIt: TMsgPackMapIterator;
+    otherValue: IMsgPackObject;
+  begin
+    Result := False;
+    if (Other.ObjectType = mptMap) and (Other.AsMap.Count = AsMap.Count) then
+    begin
+      otherMap := Other.AsMap;
+      FVariant.dataMap.IteratorInit(mapIt);
+      while FVariant.dataMap.IteratorAdvance(mapIt) do
+      begin
+        otherValue := otherMap.Get(mapIt.Key);
+        if (otherValue = nil) or not otherValue.Equals(mapIt.Value) then
+          Exit;
+      end;
+      Result := True;
+    end;
+  end;
+
+begin
+  case FType of
+    mptNil:
+      Result := (Other.ObjectType = mptNil) and (Other.AsNil = AsNil);
+    mptBoolean:
+      Result := (Other.ObjectType = mptBoolean) and (Other.AsBoolean = AsBoolean);
+    mptInteger:
+      Result := (Other.ObjectType = mptInteger) and (Other.AsInteger = AsInteger);
+    mptFloat:
+      Result := (Other.ObjectType = mptFloat) and (Other.AsFloat = AsFloat);
+    mptDouble:
+      Result := (Other.ObjectType = mptDouble) and (Other.AsDouble = AsDouble);
+    mptBytes, mptString:
+      Result := ((Other.ObjectType = mptBytes) or (Other.ObjectType = mptString)) and
+        (Other.AsBytes = AsBytes);
+    mptArray:
+      Result := ArrayEquals();
+    mptMap:
+      Result := MapEquals();
+  else
+  begin
+    Result := False;
+    Assert(False, 'unknown type');
+  end;
+  end;
+end;
+
+function TMsgPackObject.HashCode(): Cardinal;
+var
+  i: Integer;
+  mapIt: TMsgPackMapIterator;
+begin
+  case FType of
+    mptNil:
+      Result := 0;
+    mptBoolean:
+      Result := Ord(FVariant.dataBoolean);
+    mptInteger:
+      Result := Cardinal(FVariant.dataInteger) xor Cardinal(FVariant.dataInteger shr 32);
+    mptFloat:
+      Result := Cardinal(FVariant.dataInteger);
+    mptDouble:
+      Result := Cardinal(FVariant.dataInteger) xor Cardinal(FVariant.dataInteger shr 32);
+    mptBytes, mptString:
+      Result := HashBytes(FBytes);
+    mptArray:
+      begin
+        Result := FVariant.dataArray.Count;
+        for i := 0 to FVariant.dataArray.Count do
+          Result := Result xor FVariant.dataArray[i].HashCode();
+      end;
+    mptMap:
+      begin
+        Result := FVariant.dataMap.Count;
+        FVariant.dataMap.IteratorInit(mapIt);
+        while FVariant.dataMap.IteratorAdvance(mapIt) do
+          Result := Result xor mapIt.Key.HashCode() xor mapIt.Value.HashCode();
+      end;
+  else
+  begin
+    Result := 0;
+    Assert(False, 'unknown type');
+  end;
+  end;
 end;
 
 function TMsgPackObject.Clone(): IMsgPackObject;

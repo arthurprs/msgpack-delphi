@@ -24,7 +24,7 @@ var
   i, l: Integer;
   k: cardinal;
   s: SOString;
-  json : SOString;
+  json : UTF8String;
   ts: TSuperTableString;
   a: TSuperArray;
 begin
@@ -54,13 +54,12 @@ begin
   Writeln('insert array: ', k);
 
   k := GetTick;
-  json := js.AsJSon();
+  json := UTF8Encode(js.AsJSon());
   Writeln('dump: ', GetTick - k);
-  Writeln('size unicode: ', Length(json) * 2);
-  Writeln('size utf8: ', Length(UTF8Encode(json)));
+  Writeln('size utf8: ', Length(json));
 
   k := GetTick;
-  xs := TSuperObject.ParseString(PSOChar(json), False);
+  xs := TSuperObject.ParseString(PSOChar(UTF8Decode(json)), False);
   Writeln('parse: ', GetTick - k);
 
   k := GetTick;
