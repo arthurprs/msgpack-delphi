@@ -772,28 +772,28 @@ procedure TMsgPackObject.Write(const Stream: TStream);
   var
     utf8str: UTF8String;
   begin
-    case Length(Value) of
+    utf8str := UTF8Encode(Value);
+    case Length(utf8str) of
       0..31:
         begin // fixstr
-          WriteByte($A0 or Length(Value));
+          WriteByte($A0 or Length(utf8str));
         end;
       32..High(Byte):
         begin
           WriteByte($D9);
-          WriteByte(Length(Value))
+          WriteByte(Length(utf8str))
         end;
       High(Byte) + 1..High(Word):
         begin
           WriteByte($DA); // uint16
-          WriteBEWord(Length(Value));
+          WriteBEWord(Length(utf8str));
         end;
     else
       begin
         WriteByte($DB); // uint32
-        WriteBEDWord(Length(Value));
+        WriteBEDWord(Length(utf8str));
       end;
     end;
-    utf8str := UTF8Encode(Value);
     Stream.Write(Pointer(utf8str)^, Length(utf8str));
   end;
 
