@@ -1,11 +1,18 @@
 program test;
 
+{$IFDEF FPC}
+  {$MODE Delphi}
+{$ENDIF}
+
+{$ASSERTIONS ON}
 {$APPTYPE CONSOLE}
 
-{$R *.res}
+{.$R *.res}
 
 uses
+{$IFNDEF FPC}
   Windows,
+{$ENDIF}
   SysUtils,
   Classes,
   MsgPack in '../msgpack.pas';

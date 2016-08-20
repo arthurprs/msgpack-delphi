@@ -26,16 +26,18 @@ interface
 uses
   SysUtils, Classes;
 
-{$IF defined(FPC) or defined(VER170) or defined(VER180) or defined(VER190) or
-  defined(VER200) or defined(VER210) or defined(VER220) or defined(VER230) or
-  defined(VER240) or defined(VER250) or defined(VER260)}
-{$DEFINE HAVE_INLINE}
-{$IFEND}
-
-{$WARN UNSAFE_CAST OFF}
-{$WARN UNSAFE_CODE OFF}
-{$WARN UNSAFE_TYPE OFF}
-{$WARN HIDDEN_VIRTUAL OFF}
+{$IFDEF FPC}
+  {$MODE Delphi}
+  {$DEFINE HAVE_INLINE}
+{$ELSE}
+  {$WARN UNSAFE_CAST OFF}
+  {$WARN UNSAFE_CODE OFF}
+  {$WARN UNSAFE_TYPE OFF}
+  {$WARN HIDDEN_VIRTUAL OFF}
+  {$IF CompilerVersion >= 17}
+    {$DEFINE HAVE_INLINE}
+  {$IFEND}
+{$ENDIF}
 
 // Define to restrict map keys to strings (like json). Usual map operations will run at 2x+ the speed.
 {$DEFINE STRINGMAPKEYS}
@@ -52,7 +54,7 @@ type
 
   TMsgPackArray = class
   private
-    FItems: TList;
+    FItems: TInterfaceList;
     FCount: Integer;
   public
     constructor Create();
@@ -191,7 +193,7 @@ type
     function AsArray: TMsgPackArray;
     function AsMap: TMsgPackMap;
     // equality
-    function Equals(const Other: IMsgPackObject): Boolean;
+    function {%H-}Equals(const Other: IMsgPackObject): Boolean;
     // clone
     function Clone(): IMsgPackObject;
     {$IFNDEF STRINGMAPKEYS}
@@ -458,28 +460,22 @@ end;
 function TMsgPackArray.Add(const Item: IMsgPackObject): Integer;
 begin
   Inc(FCount);
-  Item._AddRef();
-  Result := FItems.Add(Pointer(Item));
+  Result := FItems.Add(Item);
 end;
 
 procedure TMsgPackArray.Clear;
-var
-  i: Integer;
 begin
-  for i := 0 to FItems.Count - 1 do
-    IMsgPackObject(Pointer(FItems[i]))._Release();
   FItems.Clear();
   FCount := 0;
 end;
 
 constructor TMsgPackArray.Create;
 begin
-  FItems := TList.Create;
+  FItems := TInterfaceList.Create;
 end;
 
 procedure TMsgPackArray.Delete(const Index: Integer);
 begin
-  IMsgPackObject(Pointer(FItems[Index]))._Release();
   FItems.Delete(Index);
   Dec(FCount);
 end;
@@ -492,13 +488,12 @@ end;
 
 function TMsgPackArray.Get(const Index: Integer): IMsgPackObject;
 begin
-  Result := IMsgPackObject(Pointer(FItems[Index]))
+  Result := IMsgPackObject(FItems[Index]);
 end;
 
 procedure TMsgPackArray.Put(const Index: Integer; const Value: IMsgPackObject);
 begin
-  IMsgPackObject(Pointer(FItems[Index]))._AddRef();
-  FItems.Add(Pointer(FItems[Index]));
+  FItems.Insert(Index, Value);
 end;
 
 { TMsgPackObject }
@@ -846,7 +841,7 @@ procedure TMsgPackObject.Write(const Stream: TStream);
         end;
       end;
       // write the pairs
-      FVariant.dataMap.IteratorInit(mapIt);
+      FVariant.dataMap.IteratorInit(mapIt{%H-});
       while FVariant.dataMap.IteratorAdvance(mapIt) do
       begin
         {$IFDEF STRINGMAPKEYS}
@@ -962,18 +957,18 @@ procedure TMsgPackObject.Read(const Stream: TStream);
 
   function ReadByte(): Byte;
   begin
-    Stream.ReadBuffer(Result, 1);
+    Stream.ReadBuffer(Result{%H-}, 1);
   end;
 
   function ReadBEWord(): Word;
   begin
-    Stream.ReadBuffer(Result, 2);
+    Stream.ReadBuffer(Result{%H-}, 2);
     Result := ((Result and $00FF) shl 8) or ((Result and $FF00) shr 8);
   end;
 
   function ReadBEDWord(): Cardinal;
   begin
-    Stream.ReadBuffer(Result, 4);
+    Stream.ReadBuffer(Result{%H-}, 4);
     Result := ((Result and $000000FF) shl 24) or ((Result and $0000FF00) shl 8) or
       ((Result and $00FF0000) shr 8) or ((Result and $FF000000) shr 24);
   end;
@@ -985,7 +980,7 @@ procedure TMsgPackObject.Read(const Stream: TStream);
   begin
     // definitely need some tunning..
     for i := 7 downto 0 do
-      Stream.ReadBuffer(bytes[i], 1);
+      Stream.ReadBuffer(bytes{%H-}[i], 1);
   end;
 
   function ReadString(const Len: Integer): UnicodeString;
@@ -1060,7 +1055,7 @@ begin
     $CA: // float
       begin
         FType := mptFloat;
-        FVariant.dataFloat := Single(Pointer(ReadBEDWord()));
+        FVariant.dataInteger := ReadBEDWord();
       end;
     $CB: // double
       begin
@@ -1080,7 +1075,7 @@ begin
     $CE: // uint32
       begin
         FType := mptInteger;
-        FVariant.dataInteger := Cardinal(ReadBEDWord());
+        FVariant.dataInteger := ReadBEDWord();
       end;
     $CF: // uint64
       begin
@@ -1223,7 +1218,7 @@ function TMsgPackObject.Equals(const Other: IMsgPackObject): Boolean;
     if (Other.ObjectType = mptMap) and (Other.AsMap.Count = AsMap.Count) then
     begin
       otherMap := Other.AsMap;
-      FVariant.dataMap.IteratorInit(mapIt);
+      FVariant.dataMap.IteratorInit(mapIt{%H-});
       while FVariant.dataMap.IteratorAdvance(mapIt) do
       begin
         otherValue := otherMap.InternalGet(mapIt.Key);
@@ -1336,7 +1331,7 @@ begin
     mptMap:
       begin
         Result := TMsgPackObject.Create(mptMap);
-        FVariant.dataMap.IteratorInit(mapIt);
+        FVariant.dataMap.IteratorInit(mapIt{%H-});
         while FVariant.dataMap.IteratorAdvance(mapIt) do
           Result.AsMap().InternalPut(mapIt.Key, mapIt.Value.Clone());
       end;
