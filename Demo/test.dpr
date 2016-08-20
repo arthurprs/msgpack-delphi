@@ -5,7 +5,10 @@ program test;
 {$ENDIF}
 
 {$ASSERTIONS ON}
-{$APPTYPE CONSOLE}
+
+{$IFDEF WINDOWS}
+  {$APPTYPE CONSOLE}
+{$ENDIF}
 
 {.$R *.res}
 

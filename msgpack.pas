@@ -21,13 +21,16 @@
 
 unit msgpack;
 
+{$IFDEF FPC}
+  {$MODE DELPHI}
+{$ENDIF}
+
 interface
 
 uses
   SysUtils, Classes;
 
 {$IFDEF FPC}
-  {$MODE Delphi}
   {$DEFINE HAVE_INLINE}
 {$ELSE}
   {$WARN UNSAFE_CAST OFF}
