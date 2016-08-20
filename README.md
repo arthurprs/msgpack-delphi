@@ -36,7 +36,7 @@ Works with
 * Delphi 2009-XE (not tested)
 * Delphi XE2 (tested)
 * Delphi XE3-5 (not tested)
-* FPC (not tested)
+* FPC (tested)
 
 Included
 --------
